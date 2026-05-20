@@ -1,28 +1,77 @@
 import { type LobeChatDatabase } from '@lobechat/database';
+import { TRPCError } from '@trpc/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DocumentModel } from '@/database/models/document';
 import { FileModel } from '@/database/models/file';
 
 import { FileService } from '../../file';
+import { DocumentHistoryService } from '../history';
 import { DocumentService } from '../index';
 
 vi.mock('@/database/models/document');
 vi.mock('@/database/models/file');
 vi.mock('../../file');
+vi.mock('../history');
 vi.mock('@lobechat/file-loaders', () => ({
   loadFile: vi.fn(),
+  UnsupportedFileTypeError: class UnsupportedFileTypeError extends Error {
+    fileType: string;
+
+    constructor(fileType: string, filename: string) {
+      super(`Unsupported file type '${fileType || 'unknown'}' for file '${filename}'.`);
+      this.name = 'UnsupportedFileTypeError';
+      this.fileType = fileType;
+    }
+  },
 }));
 vi.mock('debug', () => ({
   default: () => vi.fn(),
 }));
 
-const { loadFile } = await import('@lobechat/file-loaders');
+const { loadFile, UnsupportedFileTypeError } = await import('@lobechat/file-loaders');
+
+const createEditorDataWithDiffNode = () => ({
+  root: {
+    children: [
+      {
+        children: [
+          { children: [{ text: 'origin', type: 'text' }], type: 'paragraph' },
+          { children: [{ text: 'modified', type: 'text' }], type: 'paragraph' },
+        ],
+        diffType: 'modify',
+        type: 'diff',
+      },
+      {
+        children: [{ children: [{ text: 'added', type: 'text' }], type: 'paragraph' }],
+        diffType: 'add',
+        type: 'diff',
+      },
+      {
+        children: [{ children: [{ text: 'removed', type: 'text' }], type: 'paragraph' }],
+        diffType: 'remove',
+        type: 'diff',
+      },
+    ],
+    type: 'root',
+  },
+});
+
+const normalizedEditorDataFromDiffNode = {
+  root: {
+    children: [
+      { children: [{ text: 'origin', type: 'text' }], type: 'paragraph' },
+      { children: [{ text: 'removed', type: 'text' }], type: 'paragraph' },
+    ],
+    type: 'root',
+  },
+};
 
 describe('DocumentService', () => {
   let service: DocumentService;
   let mockDb: LobeChatDatabase;
   let mockDocumentModel: any;
+  let mockDocumentHistoryService: any;
   let mockFileModel: any;
   let mockFileService: any;
   const userId = 'test-user-id';
@@ -37,6 +86,9 @@ describe('DocumentService', () => {
           findMany: vi.fn().mockResolvedValue([]),
         },
       },
+      transaction: vi.fn(async (callback: (tx: LobeChatDatabase) => Promise<unknown>) =>
+        callback(mockDb),
+      ),
     } as any;
 
     mockDocumentModel = {
@@ -48,6 +100,13 @@ describe('DocumentService', () => {
       update: vi.fn(),
     };
 
+    mockDocumentHistoryService = {
+      compareDocumentHistoryItems: vi.fn(),
+      createHistory: vi.fn(),
+      getDocumentHistoryItem: vi.fn(),
+      listDocumentHistory: vi.fn(),
+    };
+
     mockFileModel = {
       create: vi.fn(),
       delete: vi.fn(),
@@ -56,10 +115,12 @@ describe('DocumentService', () => {
     };
 
     mockFileService = {
+      deleteFile: vi.fn(),
       downloadFileToLocal: vi.fn(),
     };
 
     vi.mocked(DocumentModel).mockImplementation(() => mockDocumentModel);
+    vi.mocked(DocumentHistoryService).mockImplementation(() => mockDocumentHistoryService);
     vi.mocked(FileModel).mockImplementation(() => mockFileModel);
     vi.mocked(FileService).mockImplementation(() => mockFileService);
 
@@ -68,6 +129,12 @@ describe('DocumentService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('constructor', () => {
+    it('should not initialize FileService before file parsing is needed', () => {
+      expect(FileService).not.toHaveBeenCalled();
+    });
   });
 
   describe('createDocument', () => {
@@ -307,6 +374,86 @@ describe('DocumentService', () => {
     });
   });
 
+  describe('document history', () => {
+    it('should delegate listDocumentHistory to DocumentHistoryService', async () => {
+      const mockResult = {
+        items: [{ id: 'head', isCurrent: true, saveSource: 'system', savedAt: new Date() }],
+      };
+      mockDocumentHistoryService.listDocumentHistory.mockResolvedValue(mockResult);
+
+      const result = await service.listDocumentHistory({ documentId: 'doc-1' });
+
+      expect(mockDocumentHistoryService.listDocumentHistory).toHaveBeenCalledWith(
+        {
+          documentId: 'doc-1',
+        },
+        undefined,
+      );
+      expect(result).toEqual(mockResult);
+    });
+
+    it('should delegate getDocumentHistoryItem to DocumentHistoryService', async () => {
+      const mockResult = {
+        editorData: { blocks: [] },
+        id: 'hist-1',
+        isCurrent: true,
+        saveSource: 'system',
+        savedAt: new Date(),
+      };
+      mockDocumentHistoryService.getDocumentHistoryItem.mockResolvedValue(mockResult);
+
+      const result = await service.getDocumentHistoryItem({
+        documentId: 'doc-1',
+        historyId: 'hist-1',
+      });
+
+      expect(mockDocumentHistoryService.getDocumentHistoryItem).toHaveBeenCalledWith(
+        {
+          documentId: 'doc-1',
+          historyId: 'hist-1',
+        },
+        undefined,
+      );
+      expect(result).toEqual(mockResult);
+    });
+
+    it('should delegate compareDocumentHistoryItems to DocumentHistoryService', async () => {
+      const mockResult = {
+        from: {
+          editorData: { blocks: [{ id: '1' }] },
+          id: 'hist-1',
+          isCurrent: false,
+          saveSource: 'autosave',
+          savedAt: new Date(),
+        },
+        to: {
+          editorData: { blocks: [{ id: '2' }] },
+          id: 'head',
+          isCurrent: true,
+          saveSource: 'system',
+          savedAt: new Date(),
+        },
+      };
+      mockDocumentHistoryService.compareDocumentHistoryItems.mockResolvedValue(mockResult);
+
+      const result = await service.compareDocumentHistoryItems({
+        documentId: 'doc-1',
+        fromHistoryId: 'hist-1',
+        toHistoryId: 'head',
+      });
+
+      expect(mockDocumentHistoryService.compareDocumentHistoryItems).toHaveBeenCalledWith(
+        {
+          documentId: 'doc-1',
+          fromHistoryId: 'hist-1',
+          toHistoryId: 'head',
+        },
+        undefined,
+      );
+      expect(result).toEqual(mockResult);
+    });
+  });
+
   describe('deleteDocument', () => {
     it('should return early if document not found', async () => {
       mockDocumentModel.findById.mockResolvedValue(undefined);
@@ -338,11 +485,27 @@ describe('DocumentService', () => {
         fileId: 'file-1',
       });
       mockDocumentModel.delete.mockResolvedValue(undefined);
-      mockFileModel.delete.mockResolvedValue(undefined);
+      mockFileModel.delete.mockResolvedValue({ url: 'files/doc-1.md' });
 
       await service.deleteDocument('doc-1');
 
       expect(mockFileModel.delete).toHaveBeenCalledWith('file-1');
+      expect(mockFileService.deleteFile).toHaveBeenCalledWith('files/doc-1.md');
+      expect(mockDocumentModel.delete).toHaveBeenCalledWith('doc-1');
+    });
+
+    it('should not delete storage for internal document placeholder files', async () => {
+      mockDocumentModel.findById.mockResolvedValue({
+        id: 'doc-1',
+        fileType: 'custom/document',
+        fileId: 'file-1',
+      });
+      mockFileModel.delete.mockResolvedValue({ url: 'internal://document/placeholder' });
+
+      await service.deleteDocument('doc-1');
+
+      expect(mockFileModel.delete).toHaveBeenCalledWith('file-1');
+      expect(mockFileService.deleteFile).not.toHaveBeenCalled();
       expect(mockDocumentModel.delete).toHaveBeenCalledWith('doc-1');
     });
 
@@ -389,11 +552,16 @@ describe('DocumentService', () => {
         { id: 'file-in-folder-1' },
         { id: 'file-in-folder-2' },
       ]);
+      mockFileModel.delete
+        .mockResolvedValueOnce({ url: 'files/file-in-folder-1.pdf' })
+        .mockResolvedValueOnce({ url: 'files/file-in-folder-2.pdf' });
 
       await service.deleteDocument('folder-1');
 
       expect(mockFileModel.delete).toHaveBeenCalledWith('file-in-folder-1');
       expect(mockFileModel.delete).toHaveBeenCalledWith('file-in-folder-2');
+      expect(mockFileService.deleteFile).toHaveBeenCalledWith('files/file-in-folder-1.pdf');
+      expect(mockFileService.deleteFile).toHaveBeenCalledWith('files/file-in-folder-2.pdf');
       expect(mockDocumentModel.delete).toHaveBeenCalledWith('folder-1');
     });
   });
@@ -418,12 +586,20 @@ describe('DocumentService', () => {
   });
 
   describe('updateDocument', () => {
+    const createCurrentDocument = (overrides: Record<string, unknown> = {}) => ({
+      editorData: { blocks: [] },
+      fileId: null,
+      id: 'doc-1',
+      updatedAt: new Date('2026-04-11T00:00:00.000Z'),
+      ...overrides,
+    });
+
     it('should update content and recalculate char/line counts', async () => {
       const newContent = 'Updated\nContent';
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: null });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument());
 
-      await service.updateDocument('doc-1', { content: newContent });
+      const result = await service.updateDocument('doc-1', { content: newContent });
 
       expect(mockDocumentModel.update).toHaveBeenCalledWith(
         'doc-1',
@@ -433,24 +609,95 @@ describe('DocumentService', () => {
           totalLineCount: 2,
         }),
       );
+      expect(mockDocumentHistoryService.createHistory).not.toHaveBeenCalled();
+      expect(result).toEqual({ historyAppended: false, id: 'doc-1' });
     });
 
-    it('should update editorData', async () => {
+    it('should append history when editorData changes', async () => {
       const editorData = { blocks: [{ type: 'paragraph', text: 'Hello' }] };
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: null });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument());
 
-      await service.updateDocument('doc-1', { editorData });
+      const result = await service.updateDocument('doc-1', { editorData, saveSource: 'manual' });
 
       expect(mockDocumentModel.update).toHaveBeenCalledWith(
         'doc-1',
         expect.objectContaining({ editorData }),
       );
+      expect(mockDocumentHistoryService.createHistory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: 'doc-1',
+          editorData: { blocks: [] },
+          saveSource: 'manual',
+        }),
+      );
+      expect(result.historyAppended).toBe(true);
+      expect(result.id).toBe('doc-1');
+      expect(result.savedAt).toBeInstanceOf(Date);
+    });
+
+    it('should persist raw editorData with diff nodes and normalize only the history snapshot', async () => {
+      const editorData = {
+        root: {
+          children: [
+            {
+              children: [
+                { children: [{ text: 'next origin', type: 'text' }], type: 'paragraph' },
+                { children: [{ text: 'next modified', type: 'text' }], type: 'paragraph' },
+              ],
+              diffType: 'modify',
+              type: 'diff',
+            },
+            {
+              children: [{ children: [{ text: 'next added', type: 'text' }], type: 'paragraph' }],
+              diffType: 'add',
+              type: 'diff',
+            },
+          ],
+        },
+      };
+      mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
+      mockDocumentModel.findById.mockResolvedValue(
+        createCurrentDocument({ editorData: createEditorDataWithDiffNode() }),
+      );
+
+      const result = await service.updateDocument('doc-1', { editorData, saveSource: 'manual' });
+
+      // Persisted editorData keeps the diff nodes — DiffAllToolbar can render
+      // them for human review on next open.
+      expect(mockDocumentModel.update).toHaveBeenCalledWith(
+        'doc-1',
+        expect.objectContaining({ editorData }),
+      );
+      // History snapshot still captures the pre-update accepted view.
+      expect(mockDocumentHistoryService.createHistory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: 'doc-1',
+          editorData: normalizedEditorDataFromDiffNode,
+          saveSource: 'manual',
+        }),
+      );
+      expect(result.historyAppended).toBe(true);
+    });
+
+    it('should skip history when editorData is unchanged', async () => {
+      const editorData = { blocks: [] };
+      mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument());
+
+      const result = await service.updateDocument('doc-1', { editorData });
+
+      expect(mockDocumentModel.update).toHaveBeenCalledWith(
+        'doc-1',
+        expect.objectContaining({ editorData }),
+      );
+      expect(mockDocumentHistoryService.createHistory).not.toHaveBeenCalled();
+      expect(result).toEqual({ historyAppended: false, id: 'doc-1' });
     });
 
     it('should update title and filename together', async () => {
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: null });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument());
 
       await service.updateDocument('doc-1', { title: 'New Title' });
 
@@ -465,7 +712,7 @@ describe('DocumentService', () => {
 
     it('should sync title update to associated file', async () => {
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: 'file-1' });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument({ fileId: 'file-1' }));
       mockFileModel.update.mockResolvedValue(undefined);
 
       await service.updateDocument('doc-1', { title: 'New Title' });
@@ -475,7 +722,7 @@ describe('DocumentService', () => {
 
     it('should sync parentId update to associated file', async () => {
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: 'file-1' });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument({ fileId: 'file-1' }));
       mockFileModel.update.mockResolvedValue(undefined);
 
       await service.updateDocument('doc-1', { parentId: 'new-parent' });
@@ -485,7 +732,7 @@ describe('DocumentService', () => {
 
     it('should sync both title and parentId to file when both are updated', async () => {
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: 'file-1' });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument({ fileId: 'file-1' }));
       mockFileModel.update.mockResolvedValue(undefined);
 
       await service.updateDocument('doc-1', { title: 'New Title', parentId: 'new-parent' });
@@ -498,7 +745,7 @@ describe('DocumentService', () => {
 
     it('should NOT update file when document has no associated file', async () => {
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: null });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument());
 
       await service.updateDocument('doc-1', { title: 'New Title' });
 
@@ -508,7 +755,7 @@ describe('DocumentService', () => {
     it('should update metadata', async () => {
       const metadata = { key: 'value' };
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: null });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument());
 
       await service.updateDocument('doc-1', { metadata });
 
@@ -520,7 +767,7 @@ describe('DocumentService', () => {
 
     it('should update fileType', async () => {
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: null });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument());
 
       await service.updateDocument('doc-1', { fileType: 'text/markdown' });
 
@@ -532,12 +779,132 @@ describe('DocumentService', () => {
 
     it('should handle parentId null (moving to root)', async () => {
       mockDocumentModel.update.mockResolvedValue({ id: 'doc-1' });
-      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', fileId: 'file-1' });
+      mockDocumentModel.findById.mockResolvedValue(createCurrentDocument({ fileId: 'file-1' }));
       mockFileModel.update.mockResolvedValue(undefined);
 
       await service.updateDocument('doc-1', { parentId: null });
 
       expect(mockFileModel.update).toHaveBeenCalledWith('file-1', { parentId: null });
+    });
+
+    it('should throw when document does not exist', async () => {
+      mockDocumentModel.findById.mockResolvedValue(undefined);
+
+      await expect(service.updateDocument('missing-doc', { title: 'Missing' })).rejects.toThrow(
+        'Document not found: missing-doc',
+      );
+    });
+  });
+
+  describe('saveDocumentHistory', () => {
+    it('should create a history entry for an existing document', async () => {
+      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', editorData: { blocks: [] } });
+      mockDocumentHistoryService.createHistory.mockResolvedValue(undefined);
+
+      const result = await service.saveDocumentHistory('doc-1', { blocks: [] }, 'llm_call');
+
+      expect(mockDocumentHistoryService.createHistory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: 'doc-1',
+          editorData: { blocks: [] },
+          saveSource: 'llm_call',
+          savedAt: expect.any(Date),
+        }),
+      );
+      expect(result.savedAt).toBeInstanceOf(Date);
+    });
+
+    it('should create history with diff nodes normalized to their origin content', async () => {
+      mockDocumentModel.findById.mockResolvedValue({ id: 'doc-1', editorData: { blocks: [] } });
+      mockDocumentHistoryService.createHistory.mockResolvedValue(undefined);
+
+      await service.saveDocumentHistory('doc-1', createEditorDataWithDiffNode(), 'llm_call');
+
+      expect(mockDocumentHistoryService.createHistory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: 'doc-1',
+          editorData: normalizedEditorDataFromDiffNode,
+          saveSource: 'llm_call',
+        }),
+      );
+    });
+
+    it('should throw when document does not exist', async () => {
+      mockDocumentModel.findById.mockResolvedValue(undefined);
+
+      await expect(service.saveDocumentHistory('missing-doc', {}, 'manual')).rejects.toThrow(
+        'Document not found: missing-doc',
+      );
+      expect(mockDocumentHistoryService.createHistory).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('trySaveCurrentDocumentHistory', () => {
+    it('should create a history entry from the current document editor data', async () => {
+      const editorData = {
+        root: { children: [{ children: [], type: 'paragraph' }], type: 'root' },
+      };
+      mockDocumentModel.findById.mockResolvedValue({ editorData, id: 'doc-1' });
+      mockDocumentHistoryService.createHistory.mockResolvedValue(undefined);
+
+      const result = await service.trySaveCurrentDocumentHistory('doc-1', 'llm_call');
+
+      expect(mockDocumentHistoryService.createHistory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: 'doc-1',
+          editorData,
+          saveSource: 'llm_call',
+          savedAt: expect.any(Date),
+        }),
+      );
+      expect(result?.savedAt).toBeInstanceOf(Date);
+    });
+
+    it('should snapshot current document history with diff nodes normalized to origin content', async () => {
+      mockDocumentModel.findById.mockResolvedValue({
+        editorData: createEditorDataWithDiffNode(),
+        id: 'doc-1',
+      });
+      mockDocumentHistoryService.createHistory.mockResolvedValue(undefined);
+
+      const result = await service.trySaveCurrentDocumentHistory('doc-1', 'llm_call');
+
+      expect(mockDocumentHistoryService.createHistory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: 'doc-1',
+          editorData: normalizedEditorDataFromDiffNode,
+          saveSource: 'llm_call',
+        }),
+      );
+      expect(result?.savedAt).toBeInstanceOf(Date);
+    });
+
+    it('should skip history when the current editor data is empty', async () => {
+      mockDocumentModel.findById.mockResolvedValue({ editorData: {}, id: 'doc-1' });
+
+      const result = await service.trySaveCurrentDocumentHistory('doc-1', 'llm_call');
+
+      expect(result).toBeUndefined();
+      expect(mockDocumentHistoryService.createHistory).not.toHaveBeenCalled();
+    });
+
+    it('should not block the caller when history creation fails', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockDocumentModel.findById.mockResolvedValue({
+        editorData: { root: { children: [{ children: [], type: 'paragraph' }], type: 'root' } },
+        id: 'doc-1',
+      });
+      mockDocumentHistoryService.createHistory.mockRejectedValueOnce(new Error('history failed'));
+
+      await expect(
+        service.trySaveCurrentDocumentHistory('doc-1', 'llm_call'),
+      ).resolves.toBeUndefined();
+
+      expect(consoleError).toHaveBeenCalledWith(
+        '[DocumentService] Failed to save current document history:',
+        expect.any(Error),
+      );
+      consoleError.mockRestore();
     });
   });
 
@@ -706,6 +1073,23 @@ describe('DocumentService', () => {
       vi.mocked(loadFile).mockRejectedValue(new Error('File not parseable'));
 
       await expect(service.parseFile('file-1')).rejects.toThrow('File not parseable');
+
+      expect(mockCleanup).toHaveBeenCalled();
+    });
+
+    it('should surface unsupported file types as BAD_REQUEST', async () => {
+      vi.mocked(loadFile).mockRejectedValue(new UnsupportedFileTypeError('zip', 'archive.zip'));
+
+      try {
+        await service.parseFile('file-1');
+        throw new Error('parseFile should reject unsupported file types');
+      } catch (error) {
+        expect(error).toBeInstanceOf(TRPCError);
+        expect(error).toMatchObject({
+          code: 'BAD_REQUEST',
+          message: "Unsupported file type 'zip' for file 'archive.zip'.",
+        });
+      }
 
       expect(mockCleanup).toHaveBeenCalled();
     });

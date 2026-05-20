@@ -1,6 +1,7 @@
 import { type GeneralAgentCallLLMResultPayload } from '@lobechat/agent-runtime';
 import { LOADING_FLAT } from '@lobechat/const';
-import { type MessageToolCall } from '@lobechat/types';
+import type { MessageToolCall } from '@lobechat/types';
+import { RequestTrigger } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
 import { chatService } from '@/services/chat';
@@ -165,6 +166,33 @@ describe('call_llm executor', () => {
             model: 'gpt-4',
             provider: 'openai',
           }),
+        }),
+      );
+    });
+
+    it('should forward request metadata to chatService', async () => {
+      const mockStore = createMockStore();
+      const context = createTestContext();
+      const instruction = createCallLLMInstruction({
+        messages: [createUserMessage({ content: 'Hello' })],
+      });
+      const state = createInitialState();
+
+      mockStreamResponse({ content: 'AI response' });
+      mockStore.dbMessagesMap[context.messageKey] = [];
+
+      await executeWithMockContext({
+        executor: 'call_llm',
+        instruction,
+        metadata: { trigger: RequestTrigger.Onboarding },
+        state,
+        mockStore,
+        context,
+      });
+
+      expect(chatService.createAssistantMessageStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: { trigger: RequestTrigger.Onboarding },
         }),
       );
     });
@@ -1725,6 +1753,112 @@ describe('call_llm executor', () => {
       const finalContent = contentCall?.[1] as string;
 
       expect(finalContent).toBe('Partial output');
+    });
+  });
+
+  describe('Error traceId preservation', () => {
+    it('should preserve backend traceId when local traceId is undefined', async () => {
+      // Given
+      const mockStore = createMockStore();
+      const context = createTestContext();
+      const instruction = createCallLLMInstruction();
+      const state = createInitialState();
+
+      mockStore.dbMessagesMap[context.messageKey] = [];
+
+      const backendTraceId = 'backend-trace-id-123';
+
+      vi.mocked(chatService.createAssistantMessageStream).mockImplementation(
+        async (params: any) => {
+          if (params.onErrorHandle) {
+            params.onErrorHandle({
+              body: {
+                traceId: backendTraceId,
+              },
+              message: 'Provider error',
+              type: 'ProviderBizError',
+            });
+          }
+
+          if (params.onFinish) {
+            await params.onFinish('', { type: 'error' });
+          }
+        },
+      );
+
+      // When
+      await executeWithMockContext({
+        executor: 'call_llm',
+        instruction,
+        state,
+        mockStore,
+        context,
+      });
+
+      // Then
+      expect(mockStore.optimisticUpdateMessageError).toHaveBeenCalled();
+      const errorCall = vi.mocked(mockStore.optimisticUpdateMessageError).mock.calls[0];
+      const errorArg = errorCall[1] as any;
+      expect(errorArg.body.traceId).toBe(backendTraceId);
+    });
+
+    it('should use local traceId when available', async () => {
+      // Given
+      const mockStore = createMockStore();
+      const localTraceId = 'local-trace-id-456';
+      const context = createTestContext();
+      const instruction = createCallLLMInstruction();
+      const state = createInitialState();
+
+      // Set traceId on operation metadata
+      mockStore.operations[context.operationId] = {
+        abortController: new AbortController(),
+        childOperationIds: [],
+        context: {
+          agentId: context.agentId,
+          messageId: context.parentId,
+          topicId: context.topicId,
+        },
+        id: context.operationId,
+        metadata: { startTime: Date.now(), traceId: localTraceId },
+        status: 'running',
+        type: 'execAgentRuntime',
+      };
+
+      mockStore.dbMessagesMap[context.messageKey] = [];
+
+      vi.mocked(chatService.createAssistantMessageStream).mockImplementation(
+        async (params: any) => {
+          if (params.onErrorHandle) {
+            params.onErrorHandle({
+              body: {
+                traceId: 'backend-trace-id',
+              },
+              message: 'Provider error',
+              type: 'ProviderBizError',
+            });
+          }
+
+          if (params.onFinish) {
+            await params.onFinish('', { type: 'error' });
+          }
+        },
+      );
+
+      // When
+      await executeWithMockContext({
+        executor: 'call_llm',
+        instruction,
+        state,
+        mockStore,
+        context,
+      });
+
+      // Then - local traceId should take precedence
+      expect(mockStore.optimisticUpdateMessageError).toHaveBeenCalled();
+      const errorCall = vi.mocked(mockStore.optimisticUpdateMessageError).mock.calls[0];
+      const errorArg = errorCall[1] as any;
+      expect(errorArg.body.traceId).toBe(localTraceId);
     });
   });
 });

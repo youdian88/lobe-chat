@@ -24,7 +24,7 @@ const activeTaskDescription = (s: TaskStoreState) => activeTaskDetail(s)?.descri
 
 const activeTaskAgentId = (s: TaskStoreState) => activeTaskDetail(s)?.agentId;
 
-// TODO [LOBE-6634]: 等后端 getTaskDetail 返回 model/provider 后，改为读 detail.model / detail.provider
+// TODO [LOBE-6634]: Once the backend getTaskDetail returns model/provider, read from detail.model / detail.provider instead
 const activeTaskModel = (s: TaskStoreState) =>
   activeTaskDetail(s)?.config?.model as string | undefined;
 
@@ -37,9 +37,22 @@ const activeTaskDependencies = (s: TaskStoreState) => activeTaskDetail(s)?.depen
 
 const activeTaskParent = (s: TaskStoreState) => activeTaskDetail(s)?.parent;
 
-// 周期执行间隔（秒），0 或 undefined 表示未配置
+// Periodic execution interval (seconds); 0 or undefined means not configured
 const activeTaskPeriodicInterval = (s: TaskStoreState) =>
   activeTaskDetail(s)?.heartbeat?.interval ?? 0;
+
+// Automation mode: 'heartbeat' | 'schedule' | null (null = no automation)
+const activeTaskAutomationMode = (s: TaskStoreState) => activeTaskDetail(s)?.automationMode ?? null;
+
+// Schedule (cron) mode fields. pattern/timezone are columns; maxExecutions lives in config.schedule.
+const activeTaskSchedulePattern = (s: TaskStoreState) =>
+  activeTaskDetail(s)?.schedule?.pattern ?? null;
+
+const activeTaskScheduleTimezone = (s: TaskStoreState) =>
+  activeTaskDetail(s)?.schedule?.timezone ?? null;
+
+const activeTaskScheduleMaxExecutions = (s: TaskStoreState) =>
+  activeTaskDetail(s)?.schedule?.maxExecutions ?? null;
 
 const activeTaskCheckpoint = (s: TaskStoreState) => activeTaskDetail(s)?.checkpoint;
 
@@ -54,7 +67,9 @@ const activeTaskTopicCount = (s: TaskStoreState) => activeTaskDetail(s)?.topicCo
 const canRunActiveTask = (s: TaskStoreState): boolean => {
   const detail = activeTaskDetail(s);
   if (!detail) return false;
-  return ['backlog', 'failed', 'paused'].includes(detail.status) && !!detail.agentId;
+  // 'scheduled' is intentionally excluded — automation owns the next run; the
+  // user can only cancel, not force an immediate run.
+  return ['backlog', 'failed', 'paused', 'completed'].includes(detail.status);
 };
 
 const canPauseActiveTask = (s: TaskStoreState): boolean =>
@@ -63,13 +78,16 @@ const canPauseActiveTask = (s: TaskStoreState): boolean =>
 const canCancelActiveTask = (s: TaskStoreState): boolean => {
   const detail = activeTaskDetail(s);
   if (!detail) return false;
-  return ['backlog', 'paused', 'running'].includes(detail.status);
+  return ['backlog', 'paused', 'running', 'scheduled'].includes(detail.status);
 };
 
 const taskSaveStatus = (s: TaskStoreState) => s.taskSaveStatus;
 
+const activeTopicDrawerTopicId = (s: TaskStoreState) => s.activeTopicDrawerTopicId;
+
 export const taskDetailSelectors = {
   activeTaskAgentId,
+  activeTaskAutomationMode,
   activeTaskCheckpoint,
   activeTaskModel,
   activeTaskDependencies,
@@ -84,10 +102,14 @@ export const taskDetailSelectors = {
   activeTaskPriority,
   activeTaskProvider,
   activeTaskReview,
+  activeTaskScheduleMaxExecutions,
+  activeTaskSchedulePattern,
+  activeTaskScheduleTimezone,
   activeTaskStatus,
   activeTaskSubtasks,
   activeTaskTopicCount,
   activeTaskWorkspace,
+  activeTopicDrawerTopicId,
   canCancelActiveTask,
   canPauseActiveTask,
   canRunActiveTask,

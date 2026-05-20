@@ -36,6 +36,7 @@ vi.mock('@/database/models/agent', () => ({
       provider: 'openai',
       systemRole: 'You are a helpful assistant',
     }),
+    queryAgents: vi.fn().mockResolvedValue([]),
   })),
 }));
 
@@ -128,6 +129,10 @@ vi.mock('@/server/services/toolExecution/deviceProxy', () => ({
     isConfigured: false,
     queryDeviceList: vi.fn().mockResolvedValue([]),
   },
+}));
+
+vi.mock('@/server/modules/ModelRuntime', () => ({
+  initModelRuntimeFromDB: vi.fn(),
 }));
 
 // Mock model-bank

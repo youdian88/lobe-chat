@@ -6,15 +6,19 @@ import { ApiKeyModel } from '@/database/models/apiKey';
 import { createContextInner, createLambdaContext } from './context';
 
 const {
+  mockAssertOIDCUserActive,
   mockExtractTraceContext,
   mockFindByKey,
   mockGetSession,
+  mockIsOIDCUserInactiveError,
   mockUpdateLastUsed,
   mockValidateOIDCJWT,
 } = vi.hoisted(() => ({
+  mockAssertOIDCUserActive: vi.fn(),
   mockExtractTraceContext: vi.fn(),
   mockFindByKey: vi.fn(),
   mockGetSession: vi.fn(),
+  mockIsOIDCUserInactiveError: vi.fn(),
   mockUpdateLastUsed: vi.fn(),
   mockValidateOIDCJWT: vi.fn(),
 }));
@@ -58,6 +62,11 @@ vi.mock('@/libs/oidc-provider/jwt', () => ({
   validateOIDCJWT: mockValidateOIDCJWT,
 }));
 
+vi.mock('@/libs/oidc-provider/access-control', () => ({
+  assertOIDCUserActive: mockAssertOIDCUserActive,
+  isOIDCUserInactiveError: mockIsOIDCUserInactiveError,
+}));
+
 vi.mock('@/utils/apiKey', async (importOriginal) => {
   const actual = await importOriginal<Record<string, any>>();
   return {
@@ -71,7 +80,6 @@ describe('createContextInner', () => {
     const context = await createContextInner();
 
     expect(context).toMatchObject({
-      authorizationHeader: undefined,
       marketAccessToken: undefined,
       oidcAuth: undefined,
       userAgent: undefined,
@@ -84,14 +92,6 @@ describe('createContextInner', () => {
     const context = await createContextInner({ userId: 'user-123' });
 
     expect(context.userId).toBe('user-123');
-  });
-
-  it('should create context with authorization header', async () => {
-    const context = await createContextInner({
-      authorizationHeader: 'Bearer token-abc',
-    });
-
-    expect(context.authorizationHeader).toBe('Bearer token-abc');
   });
 
   it('should create context with user agent', async () => {
@@ -123,7 +123,6 @@ describe('createContextInner', () => {
 
   it('should create context with all parameters combined', async () => {
     const params = {
-      authorizationHeader: 'Bearer token',
       userId: 'user-123',
       userAgent: 'Test Agent',
       marketAccessToken: 'mp-token',
@@ -136,7 +135,6 @@ describe('createContextInner', () => {
     const context = await createContextInner(params);
 
     expect(context).toMatchObject({
-      authorizationHeader: 'Bearer token',
       userId: 'user-123',
       userAgent: 'Test Agent',
       marketAccessToken: 'mp-token',
@@ -171,6 +169,8 @@ describe('createLambdaContext', () => {
     vi.clearAllMocks();
     mockExtractTraceContext.mockReturnValue(undefined);
     mockGetSession.mockResolvedValue({ user: { id: 'session-user' } });
+    mockAssertOIDCUserActive.mockResolvedValue(undefined);
+    mockIsOIDCUserInactiveError.mockReturnValue(false);
     mockValidateOIDCJWT.mockResolvedValue({
       tokenData: { sub: 'oidc-user' },
       userId: 'oidc-user',
@@ -232,5 +232,35 @@ describe('createLambdaContext', () => {
 
     expect(context.userId).toBe('session-user');
     expect(mockGetSession).toHaveBeenCalledOnce();
+  });
+
+  it('should authenticate with active OIDC auth and skip session fallback', async () => {
+    const request = new NextRequest('https://example.com/trpc/lambda', {
+      headers: { 'Oidc-Auth': 'oidc-token' },
+    });
+
+    const context = await createLambdaContext(request);
+
+    expect(context.userId).toBe('oidc-user');
+    expect(context.oidcAuth?.sub).toBe('oidc-user');
+    expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(expect.any(Object), 'oidc-user');
+    expect(mockGetSession).not.toHaveBeenCalled();
+  });
+
+  it('should reject inactive OIDC auth without falling back to session', async () => {
+    const inactiveError = new Error('OIDC user is no longer active');
+    mockAssertOIDCUserActive.mockRejectedValueOnce(inactiveError);
+    mockIsOIDCUserInactiveError.mockReturnValueOnce(true);
+
+    const request = new NextRequest('https://example.com/trpc/lambda', {
+      headers: { 'Oidc-Auth': 'oidc-token' },
+    });
+
+    const context = await createLambdaContext(request);
+
+    expect(context.userId).toBeNull();
+    expect(context.oidcAuth).toBeUndefined();
+    expect(mockValidateOIDCJWT).toHaveBeenCalledWith('oidc-token');
+    expect(mockGetSession).not.toHaveBeenCalled();
   });
 });

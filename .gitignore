@@ -25,6 +25,9 @@ Desktop.ini
 *.code-workspace
 .vscode/sessions.json
 prd
+# Recordings
+.records/
+
 # Temporary files
 .temp/
 temp/
@@ -93,7 +96,7 @@ sitemap*.xml
 robots.txt
 
 # Git hooks
-.husky/prepare-commit-msg
+.githooks/prepare-commit-msg
 
 # Documents and media
 *.pdf
@@ -137,5 +140,14 @@ pnpm-lock.yaml
 .turbo
 spaHtmlTemplates.ts
 
+# Embedded CLI bundle (built at pack time)
+apps/desktop/resources/bin/lobe-cli.js
+apps/desktop/resources/cli-package.json
+
+# Superpowers plugin brainstorm/spec outputs (local only; do not commit)
 .superpowers/
-docs/superpowers
+docs/superpowers/
+.heerogeneous-tracing
+
+# Kagura agent runtime
+.kagura/

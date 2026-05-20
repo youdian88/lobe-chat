@@ -47,6 +47,7 @@ vi.mock('@/database/models/agent', () => ({
       provider: 'openai',
       systemRole: 'You are a helpful assistant',
     }),
+    queryAgents: vi.fn().mockResolvedValue([]),
   })),
 }));
 
@@ -186,7 +187,13 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
-        botContext: { platform: 'discord' } as any,
+        botContext: {
+          applicationId: 'app-1',
+          isOwner: true,
+          platform: 'discord',
+          platformThreadId: 'discord:guild-1:channel-1',
+          senderExternalUserId: 'owner-id',
+        } as any,
         prompt: 'List my files',
       });
 
@@ -201,7 +208,13 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
-        botContext: { platform: 'discord' } as any,
+        botContext: {
+          applicationId: 'app-1',
+          isOwner: true,
+          platform: 'discord',
+          platformThreadId: 'discord:guild-1:channel-1',
+          senderExternalUserId: 'owner-id',
+        } as any,
         prompt: 'List my files',
       });
 
@@ -216,7 +229,13 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
-        botContext: { platform: 'discord' } as any,
+        botContext: {
+          applicationId: 'app-1',
+          isOwner: true,
+          platform: 'discord',
+          platformThreadId: 'discord:guild-1:channel-1',
+          senderExternalUserId: 'owner-id',
+        } as any,
         prompt: 'List my files',
       });
 
@@ -365,7 +384,11 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       const createOpArgs = mockCreateOperation.mock.calls[0][0];
       expect(createOpArgs.activeDeviceId).toBe('device-001');
-      expect(topicMock.updateMetadata).not.toHaveBeenCalled();
+      // updateMetadata is called for runningOperation persistence, but not for device binding
+      expect(topicMock.updateMetadata).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ boundDeviceId: expect.anything() }),
+      );
     });
 
     it('should not reuse topic boundDeviceId when no explicit deviceId is provided', async () => {
@@ -429,7 +452,13 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
-        botContext: { platform: 'discord' } as any,
+        botContext: {
+          applicationId: 'app-1',
+          isOwner: true,
+          platform: 'discord',
+          platformThreadId: 'discord:guild-1:channel-1',
+          senderExternalUserId: 'owner-id',
+        } as any,
         prompt: 'List my files',
       });
 
@@ -491,7 +520,11 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
         deviceId: 'device-002',
       });
 
-      expect(topicMock.updateMetadata).not.toHaveBeenCalled();
+      // updateMetadata is called for runningOperation persistence, but not for device binding
+      expect(topicMock.updateMetadata).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ boundDeviceId: expect.anything() }),
+      );
       const createOpArgs = mockCreateOperation.mock.calls[0][0];
       expect(createOpArgs.activeDeviceId).toBe('device-002');
     });
@@ -522,7 +555,13 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
-        botContext: { platform: 'discord' } as any,
+        botContext: {
+          applicationId: 'app-1',
+          isOwner: true,
+          platform: 'discord',
+          platformThreadId: 'discord:guild-1:channel-1',
+          senderExternalUserId: 'owner-id',
+        } as any,
         prompt: 'List my files',
       });
 
@@ -590,7 +629,13 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
-        botContext: { platform: 'discord' } as any,
+        botContext: {
+          applicationId: 'app-1',
+          isOwner: true,
+          platform: 'discord',
+          platformThreadId: 'discord:guild-1:channel-1',
+          senderExternalUserId: 'owner-id',
+        } as any,
         prompt: 'List my files',
       });
 
@@ -604,7 +649,13 @@ describe('AiAgentService.execAgent - device auto-activation', () => {
 
       await service.execAgent({
         agentId: 'agent-1',
-        botContext: { platform: 'discord' } as any,
+        botContext: {
+          applicationId: 'app-1',
+          isOwner: true,
+          platform: 'discord',
+          platformThreadId: 'discord:guild-1:channel-1',
+          senderExternalUserId: 'owner-id',
+        } as any,
         prompt: 'List my files',
       });
 

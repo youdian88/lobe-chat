@@ -24,8 +24,11 @@ declare global {
     __LOBE_STORES?: Record<string, () => unknown>;
     __SERVER_CONFIG__: SPAServerConfig | undefined;
     lobeEnv?: {
+      chromeVersion?: string;
       darwinMajorVersion?: number;
+      electronVersion?: string;
       isMacTahoe?: boolean;
+      nodeVersion?: string;
       platform?: NodeJS.Platform;
     };
   }
@@ -35,6 +38,9 @@ declare global {
 
   /** Vite define: development mode (NODE_ENV !== 'production') */
   const __DEV__: boolean;
+
+  /** Vite define: running under Vitest */
+  const __TEST__: boolean;
 
   /** Vite define: current bundle is mobile variant */
   const __MOBILE__: boolean;

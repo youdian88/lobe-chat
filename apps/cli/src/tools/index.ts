@@ -8,17 +8,28 @@ import {
   searchLocalFiles,
   writeLocalFile,
 } from './file';
+import { cancelHeteroTask, runHeteroTask } from './heteroTask';
 import { getCommandOutput, killCommand, runCommand } from './shell';
 
 const methodMap: Record<string, (args: any) => Promise<unknown>> = {
-  editLocalFile,
+  cancelHeteroTask,
+  editFile: editLocalFile,
   getCommandOutput,
-  globLocalFiles,
+  globFiles: globLocalFiles,
   grepContent,
   killCommand,
+  listFiles: listLocalFiles,
+  readFile: readLocalFile,
+  runCommand,
+  runHeteroTask,
+  searchFiles: searchLocalFiles,
+  writeFile: writeLocalFile,
+
+  // Legacy aliases — older Gateway versions may still send the long form
+  editLocalFile,
+  globLocalFiles,
   listLocalFiles,
   readLocalFile,
-  runCommand,
   searchLocalFiles,
   writeLocalFile,
 };
