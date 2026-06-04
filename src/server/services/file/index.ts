@@ -90,6 +90,16 @@ export class FileService {
   }
 
   /**
+   * Create cached pre-signed preview URL
+   */
+  public async createCachedPreSignedUrlForPreview(
+    url?: string | null,
+    expiresIn?: number,
+  ): Promise<string> {
+    return this.impl.createCachedPreSignedUrlForPreview(url, expiresIn);
+  }
+
+  /**
    * Upload content
    */
   public async uploadContent(path: string, content: string) {
